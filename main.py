@@ -1,6 +1,7 @@
 from fastapi import FastAPI
 from fastapi.responses import JSONResponse
 import duckdb
+import httpx
 
 app = FastAPI(title="Hitek Data API", version="1.0")
 
@@ -8,10 +9,8 @@ app = FastAPI(title="Hitek Data API", version="1.0")
 con = duckdb.connect()
 con.execute("INSTALL httpfs; LOAD httpfs;")
 
-# Tere saari files ke direct links (resolve/ format me)
 BASE_URL = "https://huggingface.co/buckets/CutehackX/hitek-data-bucket/resolve/"
 
-# Saari 21 files
 FILES = [
     "alt_master_shard_0.parquet",
     "alt_master_shard_1.parquet",
@@ -36,8 +35,6 @@ FILES = [
 ]
 
 FILE_URLS = [BASE_URL + f for f in FILES]
-
-# Column names tere sample data se
 COLUMNS = ["mobile", "name", "fname", "address", "alt", "circle", "id", "email"]
 
 @app.get("/")
@@ -47,8 +44,8 @@ async def root():
 @app.get("/number/{number}")
 async def get_number_info(number: str):
     try:
-        # Query: mobile column me exact match, ya address me partial match
-        # Saari files me search karo
+        # Query banao - saari files me search karo
+        # mobile exact match, ya alt/address me partial match
         query = f"""
             SELECT * FROM read_parquet({FILE_URLS})
             WHERE CAST("mobile" AS VARCHAR) = '{number}'
@@ -70,11 +67,9 @@ async def get_number_info(number: str):
                 }
             )
         
-        # Result ko dictionary me convert karo
         data_dict = {}
         for i, col in enumerate(COLUMNS):
             val = result[0][i]
-            # null values ko handle karo
             if val is None or str(val).lower() == 'null':
                 data_dict[col] = None
             elif isinstance(val, bytes):
