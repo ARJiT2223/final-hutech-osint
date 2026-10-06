@@ -1,84 +1,86 @@
 import streamlit as st
 import duckdb
 
-# 1. DuckDB ko 1GB RAM ke liye optimize karo
-con = duckdb.connect()
-con.execute("INSTALL httpfs; LOAD httpfs;")
-con.execute("SET memory_limit = '800MB';")  # 1GB RAM me safe rahe
-con.execute("SET preserve_insertion_order = false;")  # memory aur kam
-con.execute("SET threads = 2;")  # 2 threads, zyada nahi
-
-# 2. Teri saari 20 files (alt 0-9 + final 0-9)
-BASE_URL = "https://huggingface.co/buckets/CutehackX/hitek-data-bucket/resolve/"
-FILES = [
-    # Alt Master Shards (0 se 9 tak)
-    "alt_master_shard_0.parquet",
-    "alt_master_shard_1.parquet",
-    "alt_master_shard_2.parquet",
-    "alt_master_shard_3.parquet",
-    "alt_master_shard_4.parquet",
-    "alt_master_shard_5.parquet",
-    "alt_master_shard_6.parquet",
-    "alt_master_shard_7.parquet",
-    "alt_master_shard_8.parquet",
-    "alt_master_shard_9.parquet",
-    # Final Master Shards (0 se 9 tak)
-    "final_master_shard_0.parquet",
-    "final_master_shard_1.parquet",
-    "final_master_shard_2.parquet",
-    "final_master_shard_3.parquet",
-    "final_master_shard_4.parquet",
-    "final_master_shard_5.parquet",
-    "final_master_shard_6.parquet",
-    "final_master_shard_7.parquet",
-    "final_master_shard_8.parquet",
-    "final_master_shard_9.parquet",
-]
-
-# 3. Poori file list ke URLs banao
-FILE_URLS = [BASE_URL + f for f in FILES]
-
-# 4. Streamlit UI Setup
 st.set_page_config(page_title="Hitek Data Lookup", page_icon="🔍")
 st.title("🔍 Hitek Data Lookup")
 st.write("Mobile number daalo aur details nikalo (bina 79GB download kiye).")
 
+@st.cache_resource
+def get_connection():
+    con = duckdb.connect()
+    con.execute("INSTALL httpfs; LOAD httpfs;")
+    con.execute("SET memory_limit = '700MB';")
+    con.execute("SET preserve_insertion_order = false;")
+    con.execute("SET threads = 2;")
+    return con
+
+con = get_connection()
+
+# Saari 20 files (alt 0-9 + final 0-9)
+BASE_URL = "https://huggingface.co/buckets/CutehackX/hitek-data-bucket/resolve/"
+ALT_FILES = [f"alt_master_shard_{i}.parquet" for i in range(10)]
+FINAL_FILES = [f"final_master_shard_{i}.parquet" for i in range(10)]
+ALT_URLS = [BASE_URL + f for f in ALT_FILES]
+FINAL_URLS = [BASE_URL + f for f in FINAL_FILES]
+
+# Column names (agar actual file me alag hain to yahan change kar)
+COLUMNS = ["mobile", "name", "fname", "address", "alt", "circle", "id", "email"]
+
 mobile_input = st.text_input("Mobile number (jaise 8840367739):", placeholder="10 digit number")
 
 if st.button("Search karo"):
-    if not mobile_input:
+    if not mobile_input.strip():
         st.warning("Bhai, pehle number daal.")
     else:
         with st.spinner("Dhundh raha hoon... thoda time lag sakta hai."):
             try:
-                # 5. Query: saari files me mobile exact match, ya alt/address me partial
-                query = f"""
-                    SELECT mobile, name, fname, address, alt, circle, id, email
-                    FROM read_parquet({FILE_URLS})
+                result = None
+
+                # Pehle alt_master me dhundh (fast, chhoti files)
+                query_alt = f"""
+                    SELECT * FROM read_parquet({ALT_URLS})
                     WHERE CAST("mobile" AS VARCHAR) = '{mobile_input}'
-                       OR CAST("alt" AS VARCHAR) LIKE '%{mobile_input}%'
-                       OR CAST("address" AS VARCHAR) LIKE '%{mobile_input}%'
                     LIMIT 1;
                 """
-                
-                result = con.execute(query).fetchall()
+                try:
+                    result = con.execute(query_alt).fetchall()
+                except Exception:
+                    result = None
+
+                # Agar alt me na mile, toh final_master me dhundh
+                if not result:
+                    query_final = f"""
+                        SELECT * FROM read_parquet({FINAL_URLS})
+                        WHERE CAST("mobile" AS VARCHAR) = '{mobile_input}'
+                        LIMIT 1;
+                    """
+                    try:
+                        result = con.execute(query_final).fetchall()
+                    except Exception:
+                        result = None
 
                 if not result:
                     st.error("❌ No result found for this number")
                 else:
-                    # 6. Result ko dictionary me convert karo
-                    columns = ["mobile", "name", "fname", "address", "alt", "circle", "id", "email"]
-                    data = dict(zip(columns, result[0]))
+                    # Column names nikaalo
+                    cols = [desc[0] for desc in con.description]
+                    data = dict(zip(cols, result[0]))
+
+                    # Null aur bytes handle karo
+                    for k, v in data.items():
+                        if v is None or str(v).lower() == "null":
+                            data[k] = None
+                        elif isinstance(v, bytes):
+                            data[k] = v.decode("utf-8", errors="ignore")
+                        else:
+                            data[k] = str(v)
 
                     st.success("✅ Number mil gaya!")
-                    
-                    # 7. Sundar formatted JSON dikhao
                     st.json(data)
 
-                    # 8. Extra: Har field alag se bhi dikhao
                     st.subheader("📋 Details:")
-                    for key, value in data.items():
-                        st.write(f"**{key.capitalize()}**: {value}")
+                    for k, v in data.items():
+                        st.write(f"**{k}**: {v}")
 
             except Exception as e:
                 st.error(f"⚠️ Error: {e}")
